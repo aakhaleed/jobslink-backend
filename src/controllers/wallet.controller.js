@@ -6,6 +6,7 @@
 const { Wallet, Transaction, Escrow, Job, User } = require('../models/index');
 const { successResponse, errorResponse } = require('../utils/helpers');
 const { v4: uuidv4 } = require('uuid');
+const notify = require('../utils/notify')
 
 // ─── GET MY WALLET ───────────────────────────────────────────
 // GET /api/wallet
@@ -225,6 +226,24 @@ const releasePayment = async (req, res) => {
 
     // Update escrow status
     await escrow.update({ status: 'released' });
+
+// Notify worker payment was released
+await notify(escrow.worker_id, {
+  title: 'Payment received!',
+  message: `₦${escrow.worker_payout} has been added to your wallet for completing "${job.title}"`,
+  type: 'payment_received',
+  link: '/wallet',
+  data: { amount: escrow.worker_payout }
+})
+
+// Notify client job is complete
+await notify(req.user.id, {
+  title: 'Job completed!',
+  message: `Your job "${job.title}" has been marked as complete.`,
+  type: 'job_completed',
+  link: `/jobs/${job.id}`,
+  data: { job_id: job.id }
+})
 
     // Update job status
     await job.update({

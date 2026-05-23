@@ -9,6 +9,11 @@ const Wallet = require('./wallet.model');
 const Transaction = require('./transaction.model');
 const Escrow = require('./escrow.model');
 const Rating = require('./rating.model');
+const Notification = require('./notification.model')
+
+// Add this with the other relationships
+User.hasMany(Notification, { foreignKey: 'user_id', as: 'notifications' })
+Notification.belongsTo(User, { foreignKey: 'user_id', as: 'user' })
 
 // User relationships
 User.hasOne(WorkerProfile, { foreignKey: 'user_id', as: 'workerProfile' });
@@ -81,5 +86,6 @@ module.exports = {
   Wallet,
   Transaction,
   Escrow,
-  Rating
+  Rating,
+  Notification
 };

@@ -69,6 +69,7 @@ app.use('/api/chat', require('./routes/chat.routes'));
 app.use('/api/wallet', require('./routes/wallet.routes'));
 app.use('/api/ratings', require('./routes/ratings.routes'));
 app.use('/api/admin', require('./routes/admin.routes'));
+app.use('/api/notifications', require('./routes/notifications.routes'))
 // app.use('/api/payments', require('./routes/payments.routes'));
 
 // Socket.io — real time chat
@@ -110,6 +111,30 @@ io.on('connection', (socket) => {
 connectDB();
 syncDB();
 const PORT = process.env.PORT || 5000;
+
+// Global error handler — catches any unhandled errors
+// so the server never crashes completely
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error.message)
+  console.error('Server will continue running...')
+})
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise)
+  console.error('Reason:', reason)
+  console.error('Server will continue running...')
+})
+
+// Catch any Express errors and return clean response
+// instead of crashing the server
+app.use((err, req, res, next) => {
+  console.error('Express error:', err.message)
+  return res.status(500).json({
+    success: false,
+    message: 'Something went wrong on the server. Please try again.'
+  })
+})
+
 httpServer.listen(PORT, () => {
   console.log(`JobsLink server running on port ${PORT}`);
 });

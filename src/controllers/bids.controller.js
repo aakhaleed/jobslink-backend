@@ -1,9 +1,9 @@
 // src/controllers/bids.controller.js
 // This handles everything about bids:
 // place a bid, view bids, update, withdraw
-
 const { Bid, Job, User, WorkerProfile } = require('../models/index');
 const { successResponse, errorResponse } = require('../utils/helpers');
+const notify = require('../utils/notify')
 
 // ─── PLACE A BID ─────────────────────────────────────────────
 // POST /api/bids/:jobId
@@ -52,6 +52,14 @@ const placeBid = async (req, res) => {
       est_hours
     });
 
+    // Notify client that a new bid was received
+await notify(job.client_id, {
+  title: 'New bid received',
+  message: `A worker placed a bid of ₦${amount} on your job "${job.title}"`,
+  type: 'bid_received',
+  link: `/jobs/${jobId}`,
+  data: { job_id: jobId, bid_amount: amount }
+})
     return successResponse(res, 'Bid placed successfully.', { bid }, 201);
 
   } catch (error) {

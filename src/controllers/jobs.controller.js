@@ -5,6 +5,7 @@
 const { Job, User, WorkerProfile, Bid } = require('../models/index');
 const { successResponse, errorResponse } = require('../utils/helpers');
 const { Op } = require('sequelize');
+const notify = require('../utils/notify')
 
 // ─── POST A JOB ──────────────────────────────────────────────
 // POST /api/jobs
@@ -266,6 +267,15 @@ const assignWorker = async (req, res) => {
       status: 'assigned'
     });
 
+// Notify worker they got assigned
+await notify(bid.worker_id, {
+  title: 'You got assigned a job!',
+  message: `Congratulations! You have been assigned the job "${job.title}". Fund escrow to start.`,
+  type: 'job_assigned',
+  link: `/jobs/${job.id}`,
+  data: { job_id: job.id }
+})
+
     // Accept this bid
     await bid.update({ status: 'accepted' });
 
@@ -288,6 +298,186 @@ const assignWorker = async (req, res) => {
   }
 };
 
+// ─── WORKER MARKS JOB COMPLETE ───────────────────────────────
+// PUT /api/jobs/:id/complete
+// Worker clicks done — client gets notified to confirm
+const markComplete = async (req, res) => {
+  try {
+    const job = await Job.findByPk(req.params.id)
+    if (!job) return errorResponse(res, 'Job not found.', 404)
+
+    // Only the assigned worker can mark complete
+    if (job.worker_id !== req.user.id) {
+      return errorResponse(res, 'Not authorized.', 403)
+    }
+
+    // Job must be in progress
+    if (job.status !== 'in_progress') {
+      return errorResponse(res, 'Job must be in progress to mark complete.')
+    }
+
+    // Update job status to awaiting confirmation
+    await job.update({ status: 'awaiting_confirmation' })
+
+    // Notify client
+    await notify(job.client_id, {
+      title: 'Job marked as complete!',
+      message: `Your worker has marked "${job.title}" as complete. Please review and release payment if satisfied.`,
+      type: 'job_completed',
+      link: `/jobs/${job.id}`,
+      data: { job_id: job.id }
+    })
+
+    return successResponse(res, 'Job marked as complete. Waiting for client confirmation.')
+
+  } catch (error) {
+    console.error('Mark complete error:', error)
+    return errorResponse(res, 'Could not mark job as complete.', 500)
+  }
+}
+
+// ─── QUICK MATCH ─────────────────────────────────────────────
+// GET /api/jobs/quick-match/:jobId
+// Returns top 5 best matched workers for a job
+const quickMatch = async (req, res) => {
+  try {
+    const job = await Job.findByPk(req.params.jobId)
+    if (!job) return errorResponse(res, 'Job not found.', 404)
+
+    // Only the client who posted can see quick match
+    if (job.client_id !== req.user.id) {
+      return errorResponse(res, 'Not authorized.', 403)
+    }
+
+    // Find best matched workers
+    const workers = await User.findAll({
+      where: {
+        role: 'worker',
+        is_active: true,
+        is_verified: true,
+        state: job.state
+      },
+      include: [{
+        model: WorkerProfile,
+        as: 'workerProfile',
+        required: true,
+        where: {
+          category: job.category,
+          is_available: true
+        }
+      }],
+      attributes: { exclude: ['password_hash', 'otp', 'otp_expires'] }
+    })
+
+    // If no verified workers in same state
+    // fall back to same category anywhere in Nigeria
+    let matched = workers
+
+    if (matched.length === 0) {
+      const fallback = await User.findAll({
+        where: {
+          role: 'worker',
+          is_active: true
+        },
+        include: [{
+          model: WorkerProfile,
+          as: 'workerProfile',
+          required: true,
+          where: {
+            category: job.category,
+            is_available: true
+          }
+        }],
+        attributes: { exclude: ['password_hash', 'otp', 'otp_expires'] }
+      })
+      matched = fallback
+    }
+
+    // Sort by rating desc, then by total jobs desc
+    matched.sort((a, b) => {
+      const ratingA = parseFloat(a.workerProfile?.avg_rating || 0)
+      const ratingB = parseFloat(b.workerProfile?.avg_rating || 0)
+      if (ratingB !== ratingA) return ratingB - ratingA
+      const jobsA = parseInt(a.workerProfile?.total_jobs || 0)
+      const jobsB = parseInt(b.workerProfile?.total_jobs || 0)
+      return jobsB - jobsA
+    })
+
+    // Return top 5
+    const top5 = matched.slice(0, 5)
+
+    return successResponse(res, 'Quick match results fetched.', {
+      workers: top5,
+      total: top5.length,
+      job_category: job.category,
+      job_state: job.state
+    })
+
+  } catch (error) {
+    console.error('Quick match error:', error)
+    return errorResponse(res, 'Could not find matched workers.', 500)
+  }
+}
+
+// ─── QUICK MATCH HIRE ────────────────────────────────────────
+// POST /api/jobs/:jobId/hire/:workerId
+// Client directly hires a worker via quick match
+// No bid needed — skips straight to assignment
+const quickMatchHire = async (req, res) => {
+  try {
+    const { jobId, workerId } = req.params
+
+    const job = await Job.findByPk(jobId)
+    if (!job) return errorResponse(res, 'Job not found.', 404)
+
+    // Only the client who posted can hire
+    if (job.client_id !== req.user.id) {
+      return errorResponse(res, 'Not authorized.', 403)
+    }
+
+    if (job.status !== 'open') {
+      return errorResponse(res, 'Job is no longer open.')
+    }
+
+    // Find the worker
+    const worker = await User.findByPk(workerId)
+    if (!worker) return errorResponse(res, 'Worker not found.', 404)
+    if (worker.role !== 'worker') {
+      return errorResponse(res, 'Selected user is not a worker.', 400)
+    }
+
+    // Get worker hourly rate as the price
+    const workerProfile = await WorkerProfile.findOne({
+      where: { user_id: workerId }
+    })
+
+    const finalPrice = workerProfile?.hourly_rate || job.budget_min || 0
+
+    // Assign worker directly
+    await job.update({
+      worker_id: workerId,
+      final_price: finalPrice,
+      status: 'assigned',
+      hire_type: 'quick_match'
+    })
+
+    // Notify worker
+    await notify(workerId, {
+      title: 'You got hired via Quick Match!',
+      message: `A client has directly hired you for "${job.title}". Check the job details.`,
+      type: 'job_assigned',
+      link: `/jobs/${jobId}`,
+      data: { job_id: jobId }
+    })
+
+    return successResponse(res, 'Worker hired successfully via Quick Match!', { job })
+
+  } catch (error) {
+    console.error('Quick match hire error:', error)
+    return errorResponse(res, 'Could not hire worker.', 500)
+  }
+}
+
 module.exports = {
   postJob,
   getAllJobs,
@@ -295,5 +485,8 @@ module.exports = {
   getMyJobs,
   updateJob,
   deleteJob,
-  assignWorker
+  assignWorker,
+  markComplete,
+  quickMatch,
+  quickMatchHire
 };

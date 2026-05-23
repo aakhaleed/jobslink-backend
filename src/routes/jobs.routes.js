@@ -8,7 +8,10 @@ const {
   getMyJobs,
   updateJob,
   deleteJob,
-  assignWorker
+  assignWorker,
+  markComplete,
+  quickMatch,
+  quickMatchHire
 } = require('../controllers/jobs.controller');
 const { protect, restrictTo } = require('../middleware/auth.middleware');
 
@@ -22,5 +25,8 @@ router.get('/client/my-jobs', protect, getMyJobs);
 router.put('/:id', protect, updateJob);
 router.delete('/:id', protect, deleteJob);
 router.put('/:id/assign/:bidId', protect, assignWorker);
+router.put('/:id/complete', protect, markComplete);
+router.get('/quick-match/:jobId', protect, quickMatch);
+router.post('/:jobId/hire/:workerId', protect, quickMatchHire)
 
 module.exports = router;
